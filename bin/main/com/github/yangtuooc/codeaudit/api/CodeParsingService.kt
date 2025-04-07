@@ -16,10 +16,16 @@ interface CodeParsingService {
 
     /**
      * 根据特定框架或注解模式查找API端点
-     * @param framework 框架名称（如"Spring", "JAX-RS"等）
+     * @param frameworkName 框架名称（如"Spring", "JAX-RS"等）
      * @return 符合条件的API端点列表
      */
-    fun findApiEndpointsByFramework(framework: String): List<ApiEndpoint>
+    fun findApiEndpointsByFramework(frameworkName: String): List<ApiEndpoint>
+
+    /**
+     * 获取所有支持的框架名称
+     * @return 支持的框架名称列表
+     */
+    fun getSupportedFrameworks(): List<String>
 
     /**
      * 查找方法的调用者
