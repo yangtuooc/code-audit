@@ -59,12 +59,12 @@ class CodeAuditToolWindow(private val project: Project, toolWindow: ToolWindow) 
     private fun refreshEndpoints() {
         try {
             rootNode.removeAllChildren()
-            
+
             val endpoints = callChainService.getAllApiEndpoints()
             endpoints.forEach { endpoint: ApiEndpoint ->
                 val endpointNode = DefaultMutableTreeNode("${endpoint.httpMethod} ${endpoint.path}")
                 rootNode.add(endpointNode)
-                
+
                 // 如果有调用链，添加调用链节点
                 endpoint.callChain?.nodes?.forEach { node: CallNode ->
                     val methodName = node.method.name
@@ -73,7 +73,7 @@ class CodeAuditToolWindow(private val project: Project, toolWindow: ToolWindow) 
                     endpointNode.add(DefaultMutableTreeNode(nodeText))
                 }
             }
-            
+
             treeModel.reload()
             tree.expandRow(0)
         } catch (e: Exception) {

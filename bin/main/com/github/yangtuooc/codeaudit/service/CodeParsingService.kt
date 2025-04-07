@@ -10,6 +10,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.psi.*
+import com.intellij.psi.search.FilenameIndex
 import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.searches.ClassInheritorsSearch
 import com.intellij.psi.search.searches.ReferencesSearch
@@ -42,74 +43,96 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
         log.info("查找框架 ${framework.name} 的API端点")
         val endpoints = mutableListOf<ApiEndpoint>()
 
-        // 所有PSI操作都应该在读操作中执行
-        val psiFacade = JavaPsiFacade.getInstance(project)
-        val searchScope = GlobalSearchScope.projectScope(project)
+        log.info("开始扫描控制器注解: ${framework.annotations.filter { framework.isControllerAnnotation(it) }}")
 
-        // 查找带有控制器注解的类
-        for (controllerAnnotation in framework.annotations.filter { framework.isControllerAnnotation(it) }) {
-            val annotationClass = ReadAction.compute<PsiClass?, Throwable> {
-                psiFacade.findClass(controllerAnnotation, searchScope)
-            } ?: continue
+        // 直接扫描项目中的所有类，查找带有特定注解的类
+        val allClasses = ReadAction.compute<List<PsiClass>, Throwable> {
+            val manager = PsiManager.getInstance(project)
+            val allControllerClasses = mutableListOf<PsiClass>()
 
-            // 查找使用该注解的类
-            val controllerClasses = mutableListOf<PsiClass>()
-            ReadAction.compute<Unit, Throwable> {
-                ReferencesSearch.search(annotationClass, searchScope).forEach { reference ->
-                    val element = reference.element.parent
-                    if (element is PsiModifierListOwner) {
-                        val psiClass = element.parent
-                        if (psiClass is PsiClass) {
-                            controllerClasses.add(psiClass)
+            // 获取所有Java/Kotlin文件
+            val javaFiles = FilenameIndex.getAllFilesByExt(project, "java", GlobalSearchScope.projectScope(project))
+            val kotlinFiles = FilenameIndex.getAllFilesByExt(project, "kt", GlobalSearchScope.projectScope(project))
+
+            log.info("找到 ${javaFiles.size} 个Java文件和 ${kotlinFiles.size} 个Kotlin文件")
+
+            val files = javaFiles + kotlinFiles
+            for (file in files) {
+                val psiFile = manager.findFile(file) ?: continue
+                if (psiFile is PsiJavaFile || psiFile is PsiClassOwner) {
+                    PsiTreeUtil.findChildrenOfType(psiFile, PsiClass::class.java).forEach { psiClass ->
+                        // 检查类上的注解
+                        val annotations = psiClass.modifierList?.annotations ?: emptyArray()
+                        for (annotation in annotations) {
+                            val qName = annotation.qualifiedName
+                            if (qName != null && framework.annotations.any {
+                                    it == qName && framework.isControllerAnnotation(
+                                        qName
+                                    )
+                                }) {
+                                allControllerClasses.add(psiClass)
+                                log.info("找到带有 $qName 注解的控制器: ${psiClass.qualifiedName}")
+                                break
+                            }
                         }
                     }
                 }
             }
+            allControllerClasses
+        }
 
-            // 对于每个控制器类，查找其API端点方法
-            for (controllerClass in controllerClasses) {
-                val basePath = ReadAction.compute<String, Throwable> {
-                    framework.extractBasePathFromController(controllerClass)
+        log.info("直接扫描找到 ${allClasses.size} 个控制器类")
+
+        // 处理每个控制器类
+        for (controllerClass in allClasses) {
+            val basePath = ReadAction.compute<String, Throwable> {
+                framework.extractBasePathFromController(controllerClass)
+            }
+
+            log.info("控制器 ${controllerClass.qualifiedName} 的基础路径: $basePath")
+
+            // 处理类中的每个方法
+            val methods = ReadAction.compute<Array<PsiMethod>, Throwable> {
+                controllerClass.methods
+            }
+
+            var endpointCount = 0
+            for (method in methods) {
+                val endpointInfo = ReadAction.compute<ApiEndpoint?, Throwable> {
+                    val info = framework.extractEndpointInfo(method, basePath)
+                    if (info != null) {
+                        val (httpMethod, fullPath) = info
+
+                        // 提取参数信息
+                        val parameters = extractParameters(method, framework)
+
+                        // 获取返回类型
+                        val returnType = method.returnType?.presentableText ?: "void"
+
+                        // 创建API端点对象
+                        ApiEndpoint(
+                            id = UUID.randomUUID().toString(),
+                            path = fullPath,
+                            httpMethod = httpMethod,
+                            psiMethod = method,
+                            controllerName = method.containingClass?.qualifiedName ?: "",
+                            methodName = method.name,
+                            parameters = parameters,
+                            returnType = returnType
+                        )
+                    } else {
+                        null
+                    }
                 }
 
-                // 处理类中的每个方法
-                val methods = ReadAction.compute<Array<PsiMethod>, Throwable> {
-                    controllerClass.methods
-                }
-
-                for (method in methods) {
-                    val endpointInfo = ReadAction.compute<ApiEndpoint?, Throwable> {
-                        val info = framework.extractEndpointInfo(method, basePath)
-                        if (info != null) {
-                            val (httpMethod, fullPath) = info
-
-                            // 提取参数信息
-                            val parameters = extractParameters(method, framework)
-
-                            // 获取返回类型
-                            val returnType = method.returnType?.presentableText ?: "void"
-
-                            // 创建API端点对象
-                            ApiEndpoint(
-                                id = UUID.randomUUID().toString(),
-                                path = fullPath,
-                                httpMethod = httpMethod,
-                                psiMethod = method,
-                                controllerName = method.containingClass?.qualifiedName ?: "",
-                                methodName = method.name,
-                                parameters = parameters,
-                                returnType = returnType
-                            )
-                        } else {
-                            null
-                        }
-                    }
-
-                    if (endpointInfo != null) {
-                        endpoints.add(endpointInfo)
-                    }
+                if (endpointInfo != null) {
+                    endpoints.add(endpointInfo)
+                    endpointCount++
+                    log.info("找到API端点: ${endpointInfo.httpMethod} ${endpointInfo.path}")
                 }
             }
+
+            log.info("在控制器 ${controllerClass.qualifiedName} 中找到 $endpointCount 个API端点")
         }
 
         log.info("在框架 ${framework.name} 中发现了 ${endpoints.size} 个API端点")
@@ -162,6 +185,7 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
                     callees.add(resolvedMethod)
                 }
             }
+            Unit
         }
 
         return callees
@@ -223,7 +247,7 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
                 // 否则，添加为普通参数
                 parameters.add(
                     ApiParameter(
-                        name = parameter.name,
+                        name = parameter.name ?: "",
                         type = parameter.type.presentableText,
                         required = true,  // 默认为必需
                         description = null
