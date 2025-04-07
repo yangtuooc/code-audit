@@ -91,10 +91,10 @@ class ContextManagerServiceImpl(private val project: Project) : ContextManager {
         val entryPointId = getElementId(callChain.entryPoint)
         contexts[entryPointId] = getElementContext(callChain.entryPoint)
         
-        // 处理调用链中的所有节点
-        callChain.nodes.forEach { node ->
-            val nodeId = getElementId(node.method)
-            contexts[nodeId] = getElementContext(node.method)
+        // 处理调用链中的所有方法
+        callChain.getAllMethods().forEach { method ->
+            val methodId = getElementId(method)
+            contexts[methodId] = getElementContext(method)
         }
         
         return contexts

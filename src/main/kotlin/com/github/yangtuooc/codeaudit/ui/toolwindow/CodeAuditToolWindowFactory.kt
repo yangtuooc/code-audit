@@ -3,12 +3,12 @@ package com.github.yangtuooc.codeaudit.ui.toolwindow
 import com.github.yangtuooc.codeaudit.api.AIAnalysisService
 import com.github.yangtuooc.codeaudit.api.CallChainService
 import com.github.yangtuooc.codeaudit.model.ApiEndpoint
-import com.github.yangtuooc.codeaudit.model.CallNode
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.psi.PsiMethod
 import com.intellij.ui.components.JBPanel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
@@ -66,9 +66,9 @@ class CodeAuditToolWindow(private val project: Project, toolWindow: ToolWindow) 
                 rootNode.add(endpointNode)
 
                 // 如果有调用链，添加调用链节点
-                endpoint.callChain?.nodes?.forEach { node: CallNode ->
-                    val methodName = node.method.name
-                    val className = node.method.containingClass?.qualifiedName ?: "Unknown"
+                endpoint.callChain?.getAllMethods()?.forEach { method: PsiMethod ->
+                    val methodName = method.name
+                    val className = method.containingClass?.qualifiedName ?: "Unknown"
                     val nodeText = "$methodName() - $className"
                     endpointNode.add(DefaultMutableTreeNode(nodeText))
                 }

@@ -57,8 +57,9 @@ data class CallChain(
      */
     fun getAllMethods(): List<PsiMethod> {
         val methods = mutableListOf<PsiMethod>()
+        methods.add(entryPoint)
         collectMethods(rootCall, methods)
-        return methods
+        return methods.distinct()
     }
     
     /**
