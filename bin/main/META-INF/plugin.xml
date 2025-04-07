@@ -19,12 +19,16 @@ https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
             factoryClass="com.github.yangtuooc.codeaudit.ui.toolwindow.CodeAuditToolWindowFactory"
             id="CodeAudit" anchor="right" icon="AllIcons.General.InspectionsEye" />
         <projectService
+            serviceInterface="com.github.yangtuooc.codeaudit.api.CodeParsingService"
             serviceImplementation="com.github.yangtuooc.codeaudit.service.CodeParsingServiceImpl" />
         <projectService
+            serviceInterface="com.github.yangtuooc.codeaudit.api.CallChainService"
             serviceImplementation="com.github.yangtuooc.codeaudit.service.CallChainServiceImpl" />
         <projectService
+            serviceInterface="com.github.yangtuooc.codeaudit.api.AIAnalysisService"
             serviceImplementation="com.github.yangtuooc.codeaudit.service.AIAnalysisServiceImpl" />
         <projectService
+            serviceInterface="com.github.yangtuooc.codeaudit.api.ContextManager"
             serviceImplementation="com.github.yangtuooc.codeaudit.service.ContextManagerServiceImpl" />
 
         <postStartupActivity
