@@ -50,7 +50,12 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
         for (controllerAnnotation in framework.annotations.filter { framework.isControllerAnnotation(it) }) {
             val annotationClass = ReadAction.compute<PsiClass?, Throwable> {
                 psiFacade.findClass(controllerAnnotation, searchScope)
-            } ?: continue
+            }
+
+            if (annotationClass == null) {
+                log.warn("在项目中找不到控制器注解类: $controllerAnnotation")
+                continue
+            }
 
             // 查找使用该注解的类
             val controllerClasses = mutableListOf<PsiClass>()
@@ -64,6 +69,14 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
                         }
                     }
                 }
+                Unit
+            }
+
+            if (controllerClasses.isEmpty()) {
+                log.info("没有找到使用注解 $controllerAnnotation 的控制器类")
+                continue
+            } else {
+                log.info("找到 ${controllerClasses.size} 个使用注解 $controllerAnnotation 的控制器类")
             }
 
             // 对于每个控制器类，查找其API端点方法
@@ -77,6 +90,7 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
                     controllerClass.methods
                 }
 
+                var endpointCount = 0
                 for (method in methods) {
                     val endpointInfo = ReadAction.compute<ApiEndpoint?, Throwable> {
                         val info = framework.extractEndpointInfo(method, basePath)
@@ -107,8 +121,11 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
 
                     if (endpointInfo != null) {
                         endpoints.add(endpointInfo)
+                        endpointCount++
                     }
                 }
+
+                log.info("在控制器 ${controllerClass.qualifiedName} 中找到 $endpointCount 个API端点")
             }
         }
 
@@ -223,7 +240,7 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
                 // 否则，添加为普通参数
                 parameters.add(
                     ApiParameter(
-                        name = parameter.name,
+                        name = parameter.name ?: "",
                         type = parameter.type.presentableText,
                         required = true,  // 默认为必需
                         description = null
