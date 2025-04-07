@@ -10,6 +10,8 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.IndexNotReadyException
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiMethod
 import java.util.*
@@ -18,7 +20,7 @@ import java.util.*
  * 调用链服务实现类
  */
 @Service(Service.Level.PROJECT)
-class CallChainServiceImpl(project: Project) : CallChainService {
+class CallChainServiceImpl(private val project: Project) : CallChainService {
     private val log = logger<CallChainServiceImpl>()
     private val listeners = mutableListOf<CallChainListener>()
     private val callChainCache = mutableMapOf<String, CallChain>()
@@ -74,6 +76,7 @@ class CallChainServiceImpl(project: Project) : CallChainService {
         currentDepth: Int,
         maxDepth: Int
     ): MethodCall? {
+        log.info("构建调用层次，方法: ${method.name}, 深度: $currentDepth/$maxDepth")
         val methodKey = getMethodKey(method)
 
         // 防止循环调用和超过最大深度
@@ -91,15 +94,20 @@ class CallChainServiceImpl(project: Project) : CallChainService {
             children = mutableListOf()
         )
 
-        // 获取该方法调用的其他方法
-        val callees = codeParsingService.findCallees(method)
+        try {
+            // 获取该方法调用的其他方法
+            val callees = codeParsingService.findCallees(method)
+            log.info("方法 ${method.name} 调用了 ${callees.size} 个其他方法")
 
-        // 对于每个被调用的方法，递归构建调用层次
-        for (callee in callees) {
-            val childCall = buildMethodCallHierarchy(callee, HashSet(visited), currentDepth + 1, maxDepth)
-            if (childCall != null) {
-                methodCall.children.add(childCall)
+            // 对于每个被调用的方法，递归构建调用层次
+            for (callee in callees) {
+                val childCall = buildMethodCallHierarchy(callee, HashSet(visited), currentDepth + 1, maxDepth)
+                if (childCall != null) {
+                    methodCall.children.add(childCall)
+                }
             }
+        } catch (e: Exception) {
+            log.error("构建调用层次时出错: ${method.name}", e)
         }
 
         return methodCall
@@ -128,21 +136,67 @@ class CallChainServiceImpl(project: Project) : CallChainService {
     override fun refreshEndpoints() {
         log.info("Refreshing API endpoints...")
 
-        // 使用CodeParsingService发现所有API端点
-        apiEndpoints = ReadAction.compute<List<ApiEndpoint>, Throwable> {
-            codeParsingService.discoverApiEndpoints()
+        // 检查是否处于Dumb模式（索引未就绪）
+        if (DumbService.getInstance(project).isDumb) {
+            log.info("IDE在Dumb模式下，延迟刷新端点")
+            // 在索引就绪后再执行刷新
+            DumbService.getInstance(project).runWhenSmart {
+                doRefreshEndpoints()
+            }
+            return
         }
 
-        // 清除缓存，以便重新构建调用链
-        callChainCache.clear()
-
-        log.info("Refreshed ${apiEndpoints.size} API endpoints")
+        // 索引已就绪，直接执行刷新
+        doRefreshEndpoints()
+    }
+    
+    /**
+     * 实际执行刷新端点的操作
+     */
+    private fun doRefreshEndpoints() {
+        log.info("执行API端点刷新...")
+        
+        try {
+            // 使用CodeParsingService发现所有API端点
+            apiEndpoints = ReadAction.compute<List<ApiEndpoint>, Throwable> {
+                codeParsingService.discoverApiEndpoints()
+            }
+    
+            // 清除缓存，以便重新构建调用链
+            callChainCache.clear()
+    
+            log.info("刷新完成，共发现 ${apiEndpoints.size} 个API端点")
+        } catch (e: IndexNotReadyException) {
+            log.warn("索引未就绪，无法刷新端点", e)
+            // 如果在执行过程中发现索引未就绪，则在索引就绪后重试
+            DumbService.getInstance(project).runWhenSmart {
+                log.info("索引已就绪，重新尝试刷新端点")
+                doRefreshEndpoints()
+            }
+        } catch (e: Exception) {
+            log.error("刷新端点时发生错误", e)
+            // 确保apiEndpoints不为null
+            if (apiEndpoints.isEmpty()) {
+                apiEndpoints = emptyList()
+            }
+        }
     }
 
     /**
-     * 通知所有监听器调用链发生变化
+     * 通知监听器调用链变化
      */
-    private fun notifyListeners(newCallChain: CallChain) {
-        listeners.forEach { it.onCallChainChanged(newCallChain, null) }
+    private fun notifyListeners(callChain: CallChain) {
+        listeners.forEach { listener ->
+            // 获取旧的调用链用于对比
+            val entryPointKey = getMethodKey(callChain.entryPoint)
+            val oldCallChain = callChainCache[entryPointKey]
+            
+            // 通知监听器
+            try {
+                listener.onCallChainChanged(callChain, oldCallChain)
+            } catch (e: Exception) {
+                log.error("Failed to notify listener: ${listener.javaClass.simpleName}", e)
+            }
+        }
     }
 } 

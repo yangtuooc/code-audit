@@ -8,6 +8,8 @@ import com.github.yangtuooc.codeaudit.model.ApiParameter
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.IndexNotReadyException
 import com.intellij.openapi.project.Project
 import com.intellij.psi.*
 import com.intellij.psi.search.FilenameIndex
@@ -26,16 +28,31 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
 
     override fun discoverApiEndpoints(): List<ApiEndpoint> {
         log.info("开始发现API端点")
+        
+        // 检查是否处于Dumb模式（索引未就绪）
+        if (DumbService.getInstance(project).isDumb) {
+            log.warn("IDE在Dumb模式下无法发现API端点，需等待索引就绪")
+            throw IndexNotReadyException.create()
+        }
+        
         val allEndpoints = mutableListOf<ApiEndpoint>()
 
-        // 对于每个支持的框架，查找其API端点
-        FrameworkFactory.getAllFrameworks().forEach { framework ->
-            log.info("在框架 ${framework.name} 中查找端点")
-            val endpoints = findApiEndpointsByFramework(framework)
-            allEndpoints.addAll(endpoints)
+        try {
+            // 对于每个支持的框架，查找其API端点
+            FrameworkFactory.getAllFrameworks().forEach { framework ->
+                log.info("在框架 ${framework.name} 中查找端点")
+                val endpoints = findApiEndpointsByFramework(framework)
+                allEndpoints.addAll(endpoints)
+            }
+            
+            log.info("共发现 ${allEndpoints.size} 个API端点")
+        } catch (e: IndexNotReadyException) {
+            log.warn("索引未就绪，无法完成API端点发现", e)
+            throw e  // 重新抛出异常，让调用者处理
+        } catch (e: Exception) {
+            log.error("发现API端点时发生错误", e)
         }
-
-        log.info("共发现 ${allEndpoints.size} 个API端点")
+        
         return allEndpoints
     }
 
@@ -43,99 +60,104 @@ class CodeParsingServiceImpl(private val project: Project) : CodeParsingService 
         log.info("查找框架 ${framework.name} 的API端点")
         val endpoints = mutableListOf<ApiEndpoint>()
 
-        log.info("开始扫描控制器注解: ${framework.annotations.filter { framework.isControllerAnnotation(it) }}")
+        try {
+            log.info("开始扫描控制器注解: ${framework.annotations.filter { framework.isControllerAnnotation(it) }}")
 
-        // 直接扫描项目中的所有类，查找带有特定注解的类
-        val allClasses = ReadAction.compute<List<PsiClass>, Throwable> {
-            val manager = PsiManager.getInstance(project)
-            val allControllerClasses = mutableListOf<PsiClass>()
+            // 直接扫描项目中的所有类，查找带有特定注解的类
+            val allClasses = ReadAction.compute<List<PsiClass>, Throwable> {
+                val manager = PsiManager.getInstance(project)
+                val allControllerClasses = mutableListOf<PsiClass>()
 
-            // 获取所有Java/Kotlin文件
-            val javaFiles = FilenameIndex.getAllFilesByExt(project, "java", GlobalSearchScope.projectScope(project))
-            val kotlinFiles = FilenameIndex.getAllFilesByExt(project, "kt", GlobalSearchScope.projectScope(project))
+                // 获取所有Java/Kotlin文件
+                val javaFiles = FilenameIndex.getAllFilesByExt(project, "java", GlobalSearchScope.projectScope(project))
+                val kotlinFiles = FilenameIndex.getAllFilesByExt(project, "kt", GlobalSearchScope.projectScope(project))
 
-            log.info("找到 ${javaFiles.size} 个Java文件和 ${kotlinFiles.size} 个Kotlin文件")
+                log.info("找到 ${javaFiles.size} 个Java文件和 ${kotlinFiles.size} 个Kotlin文件")
 
-            val files = javaFiles + kotlinFiles
-            for (file in files) {
-                val psiFile = manager.findFile(file) ?: continue
-                if (psiFile is PsiJavaFile || psiFile is PsiClassOwner) {
-                    PsiTreeUtil.findChildrenOfType(psiFile, PsiClass::class.java).forEach { psiClass ->
-                        // 检查类上的注解
-                        val annotations = psiClass.modifierList?.annotations ?: emptyArray()
-                        for (annotation in annotations) {
-                            val qName = annotation.qualifiedName
-                            if (qName != null && framework.annotations.any {
-                                    it == qName && framework.isControllerAnnotation(
-                                        qName
-                                    )
-                                }) {
-                                allControllerClasses.add(psiClass)
-                                log.info("找到带有 $qName 注解的控制器: ${psiClass.qualifiedName}")
-                                break
+                val files = javaFiles + kotlinFiles
+                for (file in files) {
+                    val psiFile = manager.findFile(file) ?: continue
+                    if (psiFile is PsiJavaFile || psiFile is PsiClassOwner) {
+                        PsiTreeUtil.findChildrenOfType(psiFile, PsiClass::class.java).forEach { psiClass ->
+                            // 检查类上的注解
+                            val annotations = psiClass.modifierList?.annotations ?: emptyArray()
+                            for (annotation in annotations) {
+                                val qName = annotation.qualifiedName
+                                if (qName != null && framework.annotations.any {
+                                        it == qName && framework.isControllerAnnotation(
+                                            qName
+                                        )
+                                    }) {
+                                    allControllerClasses.add(psiClass)
+                                    log.info("找到带有 $qName 注解的控制器: ${psiClass.qualifiedName}")
+                                    break
+                                }
                             }
                         }
                     }
                 }
-            }
-            allControllerClasses
-        }
-
-        log.info("直接扫描找到 ${allClasses.size} 个控制器类")
-
-        // 处理每个控制器类
-        for (controllerClass in allClasses) {
-            val basePath = ReadAction.compute<String, Throwable> {
-                framework.extractBasePathFromController(controllerClass)
+                allControllerClasses
             }
 
-            log.info("控制器 ${controllerClass.qualifiedName} 的基础路径: $basePath")
+            log.info("直接扫描找到 ${allClasses.size} 个控制器类")
 
-            // 处理类中的每个方法
-            val methods = ReadAction.compute<Array<PsiMethod>, Throwable> {
-                controllerClass.methods
-            }
+            // 处理每个控制器类
+            for (controllerClass in allClasses) {
+                val basePath = ReadAction.compute<String, Throwable> {
+                    framework.extractBasePathFromController(controllerClass)
+                }
 
-            var endpointCount = 0
-            for (method in methods) {
-                val endpointInfo = ReadAction.compute<ApiEndpoint?, Throwable> {
-                    val info = framework.extractEndpointInfo(method, basePath)
-                    if (info != null) {
-                        val (httpMethod, fullPath) = info
+                log.info("控制器 ${controllerClass.qualifiedName} 的基础路径: $basePath")
 
-                        // 提取参数信息
-                        val parameters = extractParameters(method, framework)
+                // 处理类中的每个方法
+                val methods = ReadAction.compute<Array<PsiMethod>, Throwable> {
+                    controllerClass.methods
+                }
 
-                        // 获取返回类型
-                        val returnType = method.returnType?.presentableText ?: "void"
+                var endpointCount = 0
+                for (method in methods) {
+                    val endpointInfo = ReadAction.compute<ApiEndpoint?, Throwable> {
+                        val info = framework.extractEndpointInfo(method, basePath)
+                        if (info != null) {
+                            val (httpMethod, fullPath) = info
 
-                        // 创建API端点对象
-                        ApiEndpoint(
-                            id = UUID.randomUUID().toString(),
-                            path = fullPath,
-                            httpMethod = httpMethod,
-                            psiMethod = method,
-                            controllerName = method.containingClass?.qualifiedName ?: "",
-                            methodName = method.name,
-                            parameters = parameters,
-                            returnType = returnType
-                        )
-                    } else {
-                        null
+                            // 提取参数信息
+                            val parameters = extractParameters(method, framework)
+
+                            // 获取返回类型
+                            val returnType = method.returnType?.presentableText ?: "void"
+
+                            // 创建API端点对象
+                            ApiEndpoint(
+                                id = UUID.randomUUID().toString(),
+                                path = fullPath,
+                                httpMethod = httpMethod,
+                                psiMethod = method,
+                                controllerName = method.containingClass?.qualifiedName ?: "",
+                                methodName = method.name,
+                                parameters = parameters,
+                                returnType = returnType
+                            )
+                        } else {
+                            null
+                        }
+                    }
+
+                    if (endpointInfo != null) {
+                        endpoints.add(endpointInfo)
+                        endpointCount++
+                        log.info("找到API端点: ${endpointInfo.httpMethod} ${endpointInfo.path}")
                     }
                 }
 
-                if (endpointInfo != null) {
-                    endpoints.add(endpointInfo)
-                    endpointCount++
-                    log.info("找到API端点: ${endpointInfo.httpMethod} ${endpointInfo.path}")
-                }
+                log.info("在控制器 ${controllerClass.qualifiedName} 中找到 $endpointCount 个API端点")
             }
 
-            log.info("在控制器 ${controllerClass.qualifiedName} 中找到 $endpointCount 个API端点")
+            log.info("在框架 ${framework.name} 中发现了 ${endpoints.size} 个API端点")
+        } catch (e: Exception) {
+            log.error("发现API端点时发生错误", e)
         }
 
-        log.info("在框架 ${framework.name} 中发现了 ${endpoints.size} 个API端点")
         return endpoints
     }
 

@@ -23,6 +23,14 @@ interface AIAnalysisService {
     fun analyzeCallChain(callChain: CallChain): AnalysisResult
 
     /**
+     * 分析API端点
+     * @param endpoint API端点
+     * @param context 分析上下文
+     * @return 分析结果
+     */
+    fun analyzeApiEndpoint(endpoint: ApiEndpoint, context: AnalysisContext): AnalysisResult
+
+    /**
      * 获取AI生成的修复建议
      * @param issue 代码问题
      * @return 修复建议列表

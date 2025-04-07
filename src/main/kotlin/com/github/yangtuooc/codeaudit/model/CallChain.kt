@@ -1,6 +1,7 @@
 package com.github.yangtuooc.codeaudit.model
 
 import com.intellij.psi.PsiMethod
+import java.util.*
 
 /**
  * 表示方法调用链的模型类
@@ -54,16 +55,52 @@ data class CallChain(
     
     /**
      * 获取调用链中的所有方法
+     * 返回按调用层次有序的方法列表
      */
     fun getAllMethods(): List<PsiMethod> {
+        // 如果没有调用链，则只返回入口点方法
+        if (rootCall == null) {
+            return listOf(entryPoint)
+        }
+        
+        // 使用LinkedHashSet保持插入顺序并去重
         val methods = mutableListOf<PsiMethod>()
+        
+        // 首先添加入口点方法
         methods.add(entryPoint)
-        collectMethods(rootCall, methods)
-        return methods.distinct()
+        
+        // 然后按广度优先搜索(BFS)的顺序收集其他方法
+        val queue = LinkedList<MethodCall>()
+        val visited = HashSet<String>()
+        
+        if (rootCall != null) {
+            queue.add(rootCall!!)
+            visited.add(rootCall!!.method.toString())
+        }
+        
+        while (queue.isNotEmpty()) {
+            val current = queue.poll()
+            
+            // 避免重复添加入口点方法
+            if (current.method != entryPoint) {
+                methods.add(current.method)
+            }
+            
+            // 添加子方法到队列
+            for (child in current.children) {
+                val childMethodKey = child.method.toString()
+                if (!visited.contains(childMethodKey)) {
+                    visited.add(childMethodKey)
+                    queue.add(child)
+                }
+            }
+        }
+        
+        return methods
     }
     
     /**
-     * 递归收集调用链中的所有方法
+     * 递归收集调用链中的所有方法 (已废弃，改用BFS方式收集)
      */
     private fun collectMethods(call: MethodCall?, methods: MutableList<PsiMethod>) {
         if (call == null) {
